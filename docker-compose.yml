@@ -10,4 +10,4 @@ services:
       - ./output:/app/output              # Mount output directory for database and attachments
     environment:
       - TZ=UTC
-    command: ["python3", "main.py", "--db-path", "/app/output/emaildb.sqlite3", "--keep-mbox", "true"]
+    command: ["python3", "main.py", "--target-dir", "/app/target_files", "--mbox-dir", "/app/mbox_dir", "--db-path", "/app/output/emaildb.sqlite3", "--keep-mbox"]
