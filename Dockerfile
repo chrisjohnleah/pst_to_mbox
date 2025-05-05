@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y python3
 # Copy the current directory contents into the container at /app
 
 COPY . .
-RUN mkdir /app/output
+RUN mkdir -p /app/output
 
 # Install any needed Python packages specified in requirements.txt for your Python application
 RUN apt-get install -y python3-pip && pip3 install -r requirements.txt
