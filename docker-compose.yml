@@ -5,4 +5,9 @@ services:
       context: .
       dockerfile: Dockerfile
     volumes:
-      - .:/app
+      - ./target_files:/app/target_files  # Mount input PST files directory
+      - ./mbox_dir:/app/mbox_dir          # Mount directory for MBOX files
+      - ./output:/app/output              # Mount output directory for database and attachments
+    environment:
+      - TZ=UTC
+    command: ["python3", "main.py", "--db-path", "/app/output/emaildb.sqlite3", "--keep-mbox", "true"]
