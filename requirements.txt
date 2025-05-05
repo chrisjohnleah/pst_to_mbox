@@ -1,4 +1,2 @@
-mailbox
-sqlite3
-argparse
-concurrent.futures
+# No external dependencies required
+# All required modules (mailbox, sqlite3, argparse, concurrent.futures) are part of Python standard library
