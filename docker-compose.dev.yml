@@ -1,0 +1,14 @@
+services:
+  myapp:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    volumes:
+      - .:/app                         # Mount the entire project directory for live code editing
+      - ./target_files:/app/target_files
+      - ./mbox_dir:/app/mbox_dir
+      - ./output:/app/output
+    environment:
+      - TZ=UTC
+      - PYTHONUNBUFFERED=1             # Ensure Python output is not buffered
+    command: ["python3", "main.py", "--target-dir", "/app/target_files", "--mbox-dir", "/app/mbox_dir", "--db-path", "/app/output/emaildb.sqlite3", "--keep-mbox"]
