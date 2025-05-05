@@ -1,4 +1,4 @@
-﻿# PST to MBOX Converter
+# PST to MBOX Converter
 
 This project provides a Python script and Docker-based environment for converting PST (Personal Storage Table) files to MBOX (Mailbox) format. PST files are commonly used by Microsoft Outlook, while MBOX is a more open and widely supported mailbox format.
 
@@ -19,11 +19,12 @@ This project provides a Python script and Docker-based environment for convertin
 1. Clone or download this repository to your local machine.
 
    ```bash
-   git clone https://github.com/cyber-evangelists/pst_parser.git
+   git clone https://github.com/cyber-evangelists/pst_to_mbox.git
 
-   cd pst_parser
+   cd pst_to_mbox
 
-   docker build -t pst_parser .
+   docker build -t pst_to_mbox .
+```
 
 ## Usage
 
@@ -49,4 +50,3 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 - Ensure that your PST files are placed in the `target_files` directory before running the Docker container.
 - Customize the `main.py` script for any additional processing or parsing requirements.
-
