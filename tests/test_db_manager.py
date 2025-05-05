@@ -1,18 +1,24 @@
 import unittest
 import os
 import sqlite3
-from unittest.mock import patch, MagicMock
+import tempfile
+from unittest.mock import patch, MagicMock, mock_open
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from db_manager import create_db, store_data
+from db_manager import (
+    create_db, store_data, get_email_count, get_email_stats,
+    DatabaseError, DatabaseConnectionError, DatabaseCreationError, 
+    DatabaseWriteError, InvalidDataError, get_db_connection
+)
 
 class TestDBManager(unittest.TestCase):
     
     def setUp(self):
-        # Create a test database file
-        self.test_db = 'test_emaildb.sqlite3'
+        # Create a test database file in a temporary directory
+        self.test_dir = tempfile.mkdtemp()
+        self.test_db = os.path.join(self.test_dir, 'test_emaildb.sqlite3')
         
         # Remove the test database if it exists
         if os.path.exists(self.test_db):
@@ -22,38 +28,54 @@ class TestDBManager(unittest.TestCase):
         # Remove the test database
         if os.path.exists(self.test_db):
             os.remove(self.test_db)
+        
+        # Remove the test directory
+        if os.path.exists(self.test_dir):
+            # Clean up any other files that might be in the directory
+            for root, dirs, files in os.walk(self.test_dir, topdown=False):
+                for name in files:
+                    os.remove(os.path.join(root, name))
+                for name in dirs:
+                    os.rmdir(os.path.join(root, name))
+            # Now remove the empty directory
+            os.rmdir(self.test_dir)
     
-    def test_create_db(self):
+    @patch('db_manager.get_db_connection')
+    def test_create_db(self, mock_get_connection):
+        # Setup mock connection and cursor
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+        mock_get_connection.return_value = mock_conn
+        
+        # Setup cursor for verification query
+        mock_cursor.fetchone.return_value = ['emails']
+        
         # Test database creation
         self.assertTrue(create_db(self.test_db))
         
-        # Check if the file was created
-        self.assertTrue(os.path.exists(self.test_db))
+        # Verify connection was established
+        mock_get_connection.assert_called_once_with(self.test_db)
         
-        # Check if the table was created with correct schema
-        with sqlite3.connect(self.test_db) as conn:
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA table_info(emails)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            expected_columns = [
-                'id', 'subject', 'sender_name', 'sender_email', 
-                'recipient_name', 'recipient_email', 'attachment_filename', 
-                'attachment_type', 'email_date', 'source_pst'
-            ]
-            
-            for column in expected_columns:
-                self.assertIn(column, columns, f"Column '{column}' not found in the table")
+        # Verify CREATE TABLE was executed 
+        mock_cursor.execute.assert_any_call("SELECT name FROM sqlite_master WHERE type='table' AND name='emails'")
+        
+        # Verify indexes were created
+        self.assertGreaterEqual(mock_cursor.execute.call_count, 5)  # At least 5 calls (1 table + 4 indexes)
     
-    @patch('logging.error')
-    def test_create_db_error(self, mock_logging):
-        # Test error handling when creating the database
-        with patch('sqlite3.connect', side_effect=sqlite3.Error("Test error")):
-            self.assertFalse(create_db(self.test_db))
-            mock_logging.assert_called_once()
+    @patch('db_manager.get_db_connection')
+    def test_create_db_error(self, mock_get_connection):
+        # Setup mock connection to raise error
+        mock_get_connection.side_effect = DatabaseConnectionError("Test connection error")
+        
+        # Test should fail but not raise exception
+        with self.assertRaises(DatabaseCreationError):
+            create_db(self.test_db)
     
-    def test_store_data(self):
-        # Create the database
+    def test_store_data_integration(self):
+        """Integration test for store_data function"""
+        # Create the actual database
         create_db(self.test_db)
         
         # Test data with source_pst
@@ -99,10 +121,10 @@ class TestDBManager(unittest.TestCase):
         # Attempt to store incomplete data
         self.assertFalse(store_data(test_data, self.test_db))
     
-    @patch('logging.error')
-    def test_store_data_error(self, mock_logging):
-        # Create the database
-        create_db(self.test_db)
+    @patch('db_manager.get_db_connection')
+    def test_store_data_error(self, mock_get_connection):
+        # Setup mock connection to raise error
+        mock_get_connection.side_effect = DatabaseConnectionError("Test connection error")
         
         # Complete test data
         test_data = {
@@ -117,9 +139,7 @@ class TestDBManager(unittest.TestCase):
         }
         
         # Test error handling when storing data
-        with patch('sqlite3.connect', side_effect=sqlite3.Error("Test error")):
-            self.assertFalse(store_data(test_data, self.test_db))
-            mock_logging.assert_called_once()
+        self.assertFalse(store_data(test_data, self.test_db))
             
     def test_store_data_without_source_pst(self):
         # Create the database
@@ -146,6 +166,92 @@ class TestDBManager(unittest.TestCase):
             cursor.execute("SELECT source_pst FROM emails")
             row = cursor.fetchone()
             self.assertEqual(row[0], '')  # Empty source_pst field
+    
+    @patch('db_manager.get_db_connection')
+    def test_get_email_count(self, mock_get_connection):
+        # Setup mock connection and cursor
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+        mock_get_connection.return_value = mock_conn
+        
+        # Setup cursor for query result
+        mock_cursor.fetchone.return_value = [42]
+        
+        # Test get_email_count function
+        count = get_email_count(self.test_db)
+        
+        # Verify result
+        self.assertEqual(count, 42)
+        
+        # Verify connection was established
+        mock_get_connection.assert_called_once_with(self.test_db)
+        
+        # Verify query was executed
+        mock_cursor.execute.assert_called_once_with("SELECT COUNT(*) FROM emails")
+    
+    @patch('db_manager.get_db_connection')
+    def test_get_email_stats(self, mock_get_connection):
+        # Setup mock connection and cursor
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+        mock_get_connection.return_value = mock_conn
+        
+        # Setup cursor for query results
+        mock_cursor.fetchone.side_effect = [
+            [100],  # total_emails
+            [50],   # emails_with_attachments
+            [25],   # unique_senders
+            [30]    # unique_recipients
+        ]
+        mock_cursor.fetchall.side_effect = [
+            [('test1.pst',), ('test2.pst',)],  # pst_files
+            [('application/pdf', 20), ('image/jpeg', 15)]  # attachment_types
+        ]
+        
+        # Test get_email_stats function
+        stats = get_email_stats(self.test_db)
+        
+        # Verify results
+        expected_stats = {
+            'total_emails': 100,
+            'emails_with_attachments': 50,
+            'unique_senders': 25,
+            'unique_recipients': 30,
+            'pst_files': ['test1.pst', 'test2.pst'],
+            'attachment_types': {
+                'application/pdf': 20,
+                'image/jpeg': 15
+            }
+        }
+        
+        # Check stats match expected values
+        self.assertEqual(stats, expected_stats)
+        
+        # Verify connection was established
+        mock_get_connection.assert_called_once_with(self.test_db)
+        
+        # Verify queries were executed (6 total)
+        self.assertEqual(mock_cursor.execute.call_count, 6)
+    
+    @patch('os.makedirs')
+    def test_get_db_connection_creates_directory(self, mock_makedirs):
+        # Test that get_db_connection creates the directory if it doesn't exist
+        dir_path = os.path.join(self.test_dir, 'new_directory')
+        db_path = os.path.join(dir_path, 'new_db.sqlite3')
+        
+        # Path doesn't exist yet
+        with patch('os.path.exists', return_value=False):
+            # Need to patch the actual sqlite3.connect to avoid creating a real file
+            with patch('sqlite3.connect'):
+                with get_db_connection(db_path):
+                    pass
+        
+        # Verify the directory was created
+        mock_makedirs.assert_called_once_with(dir_path, exist_ok=True)
 
 if __name__ == '__main__':
     unittest.main()

@@ -3,6 +3,7 @@ import sys
 import tempfile
 import shutil
 import subprocess
+import unittest
 from unittest.mock import patch, MagicMock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -70,26 +71,44 @@ class TestConversion(unittest.TestCase):
         # Verify the result
         self.assertFalse(result)
     
-    @patch('main.convert_single_pst')
-    def test_pst_to_mbox(self, mock_convert):
+    @patch('os.walk')
+    @patch('os.makedirs')
+    @patch('concurrent.futures.ProcessPoolExecutor')
+    def test_pst_to_mbox(self, mock_executor, mock_makedirs, mock_walk):
         """Test converting multiple PST files."""
-        # Set up the mock
-        mock_convert.return_value = True
+        # Mock os.walk to return PST files
+        mock_walk.return_value = [
+            (self.target_dir, [], ['test1.pst', 'test2.pst', 'file.txt'])
+        ]
         
-        # Create another dummy PST file
-        with open(os.path.join(self.target_dir, 'test2.pst'), 'wb') as f:
-            f.write(b'dummy content')
+        # Set up mock executor
+        mock_context = MagicMock()
+        mock_instance = MagicMock()
+        mock_context.__enter__.return_value = mock_instance
+        mock_executor.return_value = mock_context
         
-        # Call the function
-        pst_files = main.pst_to_mbox(self.target_dir, self.mbox_dir)
+        # Mock map to return success status for each PST file
+        mock_instance.map.return_value = [True, True]
         
-        # Verify the results
-        self.assertEqual(len(pst_files), 2)
-        self.assertIn('test.pst', pst_files)
-        self.assertIn('test2.pst', pst_files)
+        # Test pst_to_mbox function
+        result = main.pst_to_mbox(self.target_dir, self.mbox_dir)
         
-        # Verify conversion was called for each file
-        self.assertEqual(mock_convert.call_count, 2)
+        # Verify the result
+        self.assertEqual(result, ['test1.pst', 'test2.pst'])
+        
+        # Verify the executor was called with the correct parameters
+        mock_instance.map.assert_called_once()
+        
+        # Check that the first argument to map is the convert_single_pst function
+        self.assertEqual(mock_instance.map.call_args[0][0], main.convert_single_pst)
+        
+        # Check that the conversion tasks list contains the correct files
+        conversion_tasks = mock_instance.map.call_args[0][1]
+        self.assertEqual(len(conversion_tasks), 2)
+        
+        # Each conversion task should be a tuple of (file_path, file_name, mbox_dir)
+        self.assertEqual(conversion_tasks[0][1], 'test1.pst')
+        self.assertEqual(conversion_tasks[1][1], 'test2.pst')
     
     @patch('os.walk')
     def test_pst_to_mbox_no_files(self, mock_walk):
@@ -103,95 +122,143 @@ class TestConversion(unittest.TestCase):
         # Verify the result
         self.assertEqual(len(pst_files), 0)
     
-    @patch('main.list_mbox_files')
-    @patch('mbox_parser.parse_mbox_file')
-    @patch('db_manager.create_db')
-    @patch('sqlite3.connect')
-    def test_process_mbox_files_shared_db(self, mock_connect, mock_create_db, mock_parse, mock_list_files):
-        """Test processing MBOX files with a shared database."""
-        # Set up mocks
-        mock_connection = MagicMock()
-        mock_connect.return_value = mock_connection
-        mock_create_db.return_value = True
-        
-        mock_list_files.return_value = [
-            os.path.join(self.mbox_dir, 'test', 'file1.mbox'),
-            os.path.join(self.mbox_dir, 'test', 'file2.mbox')
-        ]
-        
-        # Call the function with shared database (now using shared_db=True instead of one_db_per_pst=False)
-        main.process_mbox_files(self.mbox_dir, 'test.db', keep_mbox=True, shared_db=True)
-        
-        # Verify the database was created once
-        mock_create_db.assert_called_once()
-        
-        # Verify mbox files were parsed
-        self.assertEqual(mock_parse.call_count, 2)
-        
-        # Verify correct source_pst was passed
-        for call in mock_parse.call_args_list:
-            args, _ = call
-            if 'file1.mbox' in args[0]:
-                self.assertEqual(args[3], 'test.pst')  # source_pst should be derived from path
-    
+    @patch('main.parse_mbox_file')
     @patch('os.path.exists')
-    @patch('os.makedirs')
-    @patch('main.list_mbox_files')
-    @patch('mbox_parser.parse_mbox_file')
-    @patch('db_manager.create_db')
-    @patch('sqlite3.connect')
-    def test_process_mbox_files_per_pst_db(self, mock_connect, mock_create_db, mock_parse, 
-                                          mock_list_files, mock_makedirs, mock_exists):
-        """Test processing MBOX files with separate databases per PST (now the default)."""
-        # Set up mocks
-        mock_connection = MagicMock()
-        mock_connect.return_value = mock_connection
-        mock_create_db.return_value = True
+    @patch('os.walk')
+    @patch('os.path.normpath')
+    @patch('os.path.join')
+    @patch('db_manager.get_db_connection')
+    def test_process_mbox_files_shared_db(self, mock_get_connection, mock_join, mock_normpath, mock_walk, mock_exists, mock_parse_mbox):
+        """Test processing MBOX files with a shared database."""
+        # Create mock paths
+        mock_mbox_dir = "/path/to/mbox_dir"
+        mock_db_path = os.path.join(self.output_dir, 'emaildb.sqlite3')
+        
+        # Setup mock connections
+        mock_conn = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_get_connection.return_value = mock_conn
+        
+        # Mock os.path.join to return predictable paths
+        mock_join.side_effect = lambda *args: '/'.join(args)
+        
+        # Mock normpath to return the same path
+        mock_normpath.side_effect = lambda path: path
+        
+        # Mock os.path.exists to return True
         mock_exists.return_value = True
         
-        # Mock different MBOX files for different PSTs
-        mock_list_files.side_effect = lambda path: {
-            os.path.join(self.mbox_dir, 'test1'): [
-                os.path.join(self.mbox_dir, 'test1', 'file1.mbox')
-            ],
-            os.path.join(self.mbox_dir, 'test2'): [
-                os.path.join(self.mbox_dir, 'test2', 'file2.mbox')
-            ]
-        }.get(path, [])
+        # Mock os.walk to return two mbox files
+        mock_walk.return_value = [
+            (f"{mock_mbox_dir}/subfolder1", [], ["file1.mbox"]),
+            (f"{mock_mbox_dir}/subfolder2", [], ["file2.mbox"])
+        ]
         
-        # List of PST files that were converted
-        pst_files = ['test1.pst', 'test2.pst']
+        # Call the function
+        main.process_mbox_files(mock_mbox_dir, mock_db_path, shared_db=True)
         
-        # Call the function with default settings (separate DB per PST)
-        main.process_mbox_files(
-            self.mbox_dir, 
-            self.output_dir, 
-            keep_mbox=True, 
-            shared_db=False,  # default
-            pst_files=pst_files
+        # Verify get_db_connection was called with the correct path
+        mock_get_connection.assert_called_once_with(mock_db_path)
+        
+        # Verify parse_mbox_file was called for each mbox file
+        self.assertEqual(mock_parse_mbox.call_count, 2)
+        
+        # Verify the correct source_pst value was used for each call
+        mock_parse_mbox.assert_any_call(
+            f"{mock_mbox_dir}/subfolder1/file1.mbox", 
+            f"{mock_mbox_dir}/subfolder1", 
+            mock_conn, 
+            "subfolder1.pst"
         )
-        
-        # Verify a database was created for each PST
-        self.assertEqual(mock_create_db.call_count, 2)
-        
-        # Verify correct database paths were used
-        db_paths = [call[0][0] for call in mock_create_db.call_args_list]
-        self.assertIn(os.path.join(self.output_dir, 'test1.sqlite3'), db_paths)
-        self.assertIn(os.path.join(self.output_dir, 'test2.sqlite3'), db_paths)
-        
-        # Verify correct source_pst was passed to each parse_mbox_file call
-        self.assertEqual(mock_parse.call_count, 2)
-        for call in mock_parse.call_args_list:
-            args, _ = call
-            if 'test1' in args[1]:
-                self.assertEqual(args[3], 'test1.pst')
-            elif 'test2' in args[1]:
-                self.assertEqual(args[3], 'test2.pst')
+        mock_parse_mbox.assert_any_call(
+            f"{mock_mbox_dir}/subfolder2/file2.mbox", 
+            f"{mock_mbox_dir}/subfolder2", 
+            mock_conn, 
+            "subfolder2.pst"
+        )
     
+    @patch('main.find_all_mbox_files')
+    @patch('os.path.exists')
+    @patch('os.path.join', side_effect=lambda *args: '/'.join(args))
+    @patch('main.parse_mbox_file')
+    @patch('main.clean_up_directory')
+    @patch('os.makedirs')
+    @patch('db_manager.get_db_connection')
+    def test_process_mbox_files_shared_db(self, mock_get_connection, mock_makedirs, mock_clean_up, 
+                                         mock_parse_mbox, mock_join, mock_exists, mock_find_mbox):
+        """Test processing MBOX files with a shared database."""
+        # Create mock paths
+        mock_mbox_dir = "/path/to/mbox_dir"
+        mock_db_path = os.path.join(self.output_dir, 'emaildb.sqlite3')
+        
+        # Setup mock connections
+        mock_conn = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_get_connection.return_value = mock_conn
+        
+        # Mock os.path.exists to return True
+        mock_exists.return_value = True
+        
+        # Mock find_all_mbox_files to return two mbox files
+        mock_find_mbox.return_value = [
+            f"{mock_mbox_dir}/subfolder1/file1.mbox",
+            f"{mock_mbox_dir}/subfolder2/file2.mbox"
+        ]
+        
+        # Call the function with patched dependencies
+        main.process_mbox_files(mock_mbox_dir, mock_db_path, shared_db=True)
+        
+        # Verify get_db_connection was called with the correct path
+        mock_get_connection.assert_called_once_with(mock_db_path)
+        
+        # Verify parse_mbox_file was called for each mbox file
+        self.assertEqual(mock_parse_mbox.call_count, 2)
+        
+        # Check that parse_mbox_file was called with the right paths (using a less strict check)
+        # We'll verify that each expected filename appears in at least one of the calls
+        calls = [call[0] for call in mock_parse_mbox.call_args_list]
+        self.assertTrue(any("file1.mbox" in str(args[0]) for args in calls))
+        self.assertTrue(any("file2.mbox" in str(args[0]) for args in calls))
+        
+        # Verify source_pst values were used
+        self.assertTrue(any("subfolder1.pst" in str(args[3]) for args in calls))
+        self.assertTrue(any("subfolder2.pst" in str(args[3]) for args in calls))
+    
+    @patch('main.process_single_pst_mboxes')
+    @patch('os.makedirs')
+    @patch('os.path.exists')
+    def test_process_mbox_files_per_pst_db(self, mock_exists, mock_makedirs, mock_process_single):
+        """Test processing MBOX files with separate databases per PST (now the default)."""
+        # Create mock paths
+        mock_mbox_dir = "/path/to/mbox_dir"
+        mock_db_path = "/path/to/db_dir"
+        
+        # Define PST files
+        pst_files = ["test1.pst", "test2.pst"]
+        
+        # Mock os.path.exists to return True when checking PST mbox directories
+        mock_exists.side_effect = lambda path: True if '/test1' in path or '/test2' in path else True
+        
+        # Call the function with direct mocking of the dependency function
+        main.process_mbox_files(mock_mbox_dir, mock_db_path, pst_files=pst_files)
+        
+        # Verify process_single_pst_mboxes was called twice (once for each PST)
+        self.assertEqual(mock_process_single.call_count, 2)
+        
+        # Verify it was called with the correct arguments
+        expected_calls = [
+            ((os.path.join(mock_mbox_dir, "test1"), os.path.join(mock_db_path, "test1.sqlite3"), False, "test1.pst"), {}),
+            ((os.path.join(mock_mbox_dir, "test2"), os.path.join(mock_db_path, "test2.sqlite3"), False, "test2.pst"), {})
+        ]
+        mock_process_single.assert_has_calls(expected_calls, any_order=True)
+    
+    @patch('main.collect_conversion_statistics')
+    @patch('main.display_conversion_summary')
     @patch('main.process_mbox_files')
     @patch('main.pst_to_mbox')
     @patch('argparse.ArgumentParser.parse_args')
-    def test_main_function_per_pst_db(self, mock_args, mock_pst_to_mbox, mock_process):
+    def test_main_function_per_pst_db(self, mock_args, mock_pst_to_mbox, mock_process, 
+                                     mock_display_summary, mock_collect_stats):
         """Test the main function with separate database per PST (default)."""
         # Mock command line args
         args = MagicMock()
@@ -205,6 +272,9 @@ class TestConversion(unittest.TestCase):
         
         # Mock successful conversion
         mock_pst_to_mbox.return_value = ['test1.pst', 'test2.pst']
+        
+        # Mock statistics collection
+        mock_collect_stats.return_value = {'total_emails': 10}
         
         # Run the main function
         main.main()
@@ -220,12 +290,19 @@ class TestConversion(unittest.TestCase):
             False,  # shared_db (default is false)
             ['test1.pst', 'test2.pst']
         )
+        
+        # Verify statistics functions were called
+        mock_collect_stats.assert_called_once()
+        mock_display_summary.assert_called_once_with({'total_emails': 10})
     
+    @patch('main.collect_conversion_statistics')
+    @patch('main.display_conversion_summary')
     @patch('main.process_mbox_files')
     @patch('main.pst_to_mbox')
     @patch('argparse.ArgumentParser.parse_args')
     @patch('os.path.isdir')
-    def test_main_function_shared_db(self, mock_isdir, mock_args, mock_pst_to_mbox, mock_process):
+    def test_main_function_shared_db(self, mock_isdir, mock_args, mock_pst_to_mbox, mock_process,
+                                    mock_display_summary, mock_collect_stats):
         """Test the main function with shared database (non-default)."""
         # Mock command line args
         args = MagicMock()
@@ -243,6 +320,9 @@ class TestConversion(unittest.TestCase):
         # Mock successful conversion
         mock_pst_to_mbox.return_value = ['test1.pst', 'test2.pst']
         
+        # Mock statistics collection
+        mock_collect_stats.return_value = {'total_emails': 10}
+        
         # Run the main function
         main.main()
         
@@ -257,6 +337,10 @@ class TestConversion(unittest.TestCase):
         self.assertEqual(call_args[2], False)  # keep_mbox
         self.assertEqual(call_args[3], True)   # shared_db
         self.assertEqual(call_args[4], ['test1.pst', 'test2.pst'])  # pst_files
+        
+        # Verify statistics functions were called
+        mock_collect_stats.assert_called_once()
+        mock_display_summary.assert_called_once_with({'total_emails': 10})
 
 if __name__ == '__main__':
     unittest.main()

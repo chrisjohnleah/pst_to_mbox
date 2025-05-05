@@ -11,11 +11,11 @@ help:
 
 test:
 	@echo "Running tests..."
-	docker-compose -f docker-compose.dev.yml run --rm myapp pytest -xvs tests/
+	docker-compose -f docker-compose.dev.yml run --rm pst_to_mbox pytest -xvs tests/
 
 coverage:
 	@echo "Running tests with coverage report..."
-	docker-compose -f docker-compose.dev.yml run --rm myapp pytest --cov=. --cov-report=term --cov-report=html tests/
+	docker-compose -f docker-compose.dev.yml run --rm pst_to_mbox pytest --cov=. --cov-report=term --cov-report=html tests/
 	@echo "HTML coverage report generated in htmlcov/ directory"
 
 run:

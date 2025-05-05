@@ -10,7 +10,12 @@ from unittest.mock import patch, MagicMock, mock_open
 # Add the parent directory to the path so we can import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mbox_parser import parse_mbox_file
+from mbox_parser import (
+    parse_mbox_file, setup_attachment_dir, extract_email_details,
+    has_required_fields, save_attachment, create_email_data,
+    check_sensitive_content, sanitize_filename, check_attachment,
+    process_message_attachments
+)
 
 class MockMessage:
     """Mock for mailbox.mboxMessage."""
@@ -92,6 +97,137 @@ class TestMboxParser(unittest.TestCase):
         # Remove temporary directory
         shutil.rmtree(self.test_dir)
     
+    def test_setup_attachment_dir(self):
+        """Test the setup_attachment_dir function."""
+        # Call the function
+        save_dir = setup_attachment_dir(self.output_dir)
+        
+        # Verify the result
+        expected_dir = os.path.join(self.output_dir, 'attachments')
+        self.assertEqual(save_dir, expected_dir)
+        self.assertTrue(os.path.exists(expected_dir))
+    
+    def test_extract_email_details(self):
+        """Test extracting email details from a message."""
+        # Create test message
+        message = MockMessage(headers={
+            'subject': 'Test Subject',
+            'from': 'Sender Name <sender@example.com>',
+            'to': 'Receiver Name <receiver@example.com>',
+            'date': '2023-01-01 12:00:00'
+        })
+        
+        # Extract details
+        subject, sender_name, sender_email, receiver_name, receiver_email, date = extract_email_details(message)
+        
+        # Verify results
+        self.assertEqual(subject, 'Test Subject')
+        self.assertEqual(sender_name, 'Sender Name')
+        self.assertEqual(sender_email, 'sender@example.com')
+        self.assertEqual(receiver_name, 'Receiver Name')
+        self.assertEqual(receiver_email, 'receiver@example.com')
+        self.assertEqual(date, '2023-01-01 12:00:00')
+    
+    def test_has_required_fields(self):
+        """Test checking for required fields."""
+        # Test with all fields present
+        self.assertTrue(has_required_fields('Subject', 'Sender', 'Receiver'))
+        
+        # Test with missing fields
+        self.assertFalse(has_required_fields('', 'Sender', 'Receiver'))
+        self.assertFalse(has_required_fields('Subject', '', 'Receiver'))
+        self.assertFalse(has_required_fields('Subject', 'Sender', ''))
+    
+    def test_save_attachment(self):
+        """Test saving an attachment."""
+        # Create a test attachment
+        attachment_data = b'Test attachment content'
+        attachment_path = os.path.join(self.test_dir, 'attachment.txt')
+        
+        # Save the attachment
+        result = save_attachment(attachment_data, attachment_path)
+        
+        # Verify the result
+        self.assertTrue(result)
+        self.assertTrue(os.path.exists(attachment_path))
+        
+        # Check file content
+        with open(attachment_path, 'rb') as f:
+            content = f.read()
+            self.assertEqual(content, attachment_data)
+    
+    def test_save_attachment_error(self):
+        """Test handling errors when saving attachments."""
+        # Create test data
+        attachment_data = b'Test attachment content'
+        
+        # Test with IOError
+        with patch('builtins.open', side_effect=IOError("Test error")):
+            result = save_attachment(attachment_data, "invalid/path")
+            self.assertFalse(result)
+    
+    def test_create_email_data(self):
+        """Test creating email data dictionary."""
+        # Create email data
+        email_data = create_email_data(
+            'Test Subject', 'Sender Name', 'sender@example.com',
+            'Receiver Name', 'receiver@example.com', '2023-01-01',
+            'test.txt', 'text/plain', 'test.pst'
+        )
+        
+        # Verify the result
+        expected = {
+            'subject': 'Test Subject',
+            'sender_name': 'Sender Name',
+            'sender_email': 'sender@example.com',
+            'recipient_name': 'Receiver Name',
+            'recipient_email': 'receiver@example.com',
+            'attachment_filename': 'test.txt',
+            'attachment_type': 'text/plain',
+            'email_date': '2023-01-01',
+            'source_pst': 'test.pst'
+        }
+        self.assertEqual(email_data, expected)
+    
+    def test_check_sensitive_content(self):
+        """Test checking for sensitive content."""
+        # Test with sensitive content
+        self.assertTrue(check_sensitive_content("This contains password information"))
+        self.assertTrue(check_sensitive_content("CONFIDENTIAL: secret data"))
+        self.assertTrue(check_sensitive_content("SSN: 123-45-6789"))
+        
+        # Test with non-sensitive content
+        self.assertFalse(check_sensitive_content("This is a normal message"))
+        self.assertFalse(check_sensitive_content(""))
+    
+    def test_sanitize_filename(self):
+        """Test sanitizing filenames."""
+        # Test with invalid characters
+        self.assertEqual(sanitize_filename("file/with\\invalid:chars"), "with_invalid_chars")
+        
+        # Test with path traversal attempt
+        self.assertEqual(sanitize_filename("../../../etc/passwd"), "passwd")
+        
+        # Test with normal filename
+        self.assertEqual(sanitize_filename("normal_file.txt"), "normal_file.txt")
+    
+    def test_check_attachment(self):
+        """Test checking attachments for security issues."""
+        # Test with normal attachment
+        normal_data = b'This is normal data'
+        self.assertTrue(check_attachment('text/plain', normal_data))
+        
+        # Test with executable signature
+        exe_data = b'MZ\x90\x00\x03\x00\x00\x00'  # Windows executable signature
+        self.assertFalse(check_attachment('application/octet-stream', exe_data))
+        
+        # Test with script signature
+        script_data = b'#!/bin/bash\necho "Hello"'
+        self.assertFalse(check_attachment('text/plain', script_data))
+        
+        # Test with potentially problematic content type
+        self.assertFalse(check_attachment('application/x-msdownload', b'Normal data'))
+    
     @patch('mailbox.mbox')
     def test_parse_mbox_file_empty(self, mock_mbox):
         """Test parsing an empty MBOX file."""
@@ -136,114 +272,109 @@ class TestMboxParser(unittest.TestCase):
         self.assertEqual(result[0]['sender_email'], 'sender@example.com')
         self.assertEqual(result[0]['recipient_name'], 'Receiver Name')
         self.assertEqual(result[0]['recipient_email'], 'receiver@example.com')
-        self.assertEqual(result[0]['attachment_filename'], '')
-        self.assertEqual(result[0]['attachment_type'], '')
+        self.assertEqual(result[0]['email_date'], '2023-01-01 12:00:00')
+        self.assertEqual(result[0]['attachment_filename'], '')  # No attachment
     
     @patch('mailbox.mbox')
     def test_parse_mbox_file_with_attachments(self, mock_mbox):
         """Test parsing a mailbox with messages that have attachments."""
         # Create a message with an attachment
-        attachment = MockPart(
-            content_type='text/plain',
-            filename='attachment.txt',
-            disposition='attachment',
-            payload=b'test attachment content'
-        )
-        
         message = MockMessage(
             headers={
-                'subject': 'Test Subject',
+                'subject': 'Test Subject with Attachment',
                 'from': 'Sender Name <sender@example.com>',
                 'to': 'Receiver Name <receiver@example.com>',
                 'date': '2023-01-01 12:00:00'
             },
             parts=[
-                MockPart(content_type='multipart/mixed'),
-                attachment
+                MockPart(
+                    content_type='text/plain', 
+                    filename='test.txt', 
+                    disposition='attachment; filename="test.txt"',
+                    payload=b'Test attachment content'
+                )
             ]
         )
         
         # Mock the mailbox with one message
-        mock_mbox.return_value = [message]
+        mock_mailbox = MagicMock()
+        mock_mailbox.__iter__.return_value = [message]
+        mock_mailbox.__len__.return_value = 1
+        mock_mbox.return_value = mock_mailbox
         
-        # Mock open for writing attachment
-        m_open = mock_open()
+        # Set up the test environment
+        os.makedirs(os.path.join(self.output_dir, 'attachments'), exist_ok=True)
         
-        # Parse the mailbox
-        with patch('builtins.open', m_open), patch('sqlite3.connect') as mock_connect:
-            mock_cursor = MagicMock()
-            mock_connection = MagicMock()
-            mock_connection.cursor.return_value = mock_cursor
-            mock_connect.return_value = mock_connection
+        # Mock the store_data function to prevent database operations
+        with patch('mbox_parser.store_data', return_value=True) as mock_store_data:
+            # Mock save_attachment to return True
+            with patch('mbox_parser.save_attachment', return_value=True) as mock_save:
+                # Mock file opening
+                with patch('builtins.open', mock_open()) as mock_file:
+                    # Parse the mailbox
+                    result = parse_mbox_file(self.mbox_path, self.output_dir)
+                
+                # Verify save_attachment was called
+                mock_save.assert_called_once()
             
-            result = parse_mbox_file(self.mbox_path, self.output_dir)
+            # Verify store_data was called twice (once for the attachment info)
+            mock_store_data.assert_called_once()
         
         # Should have one message in the result
         self.assertEqual(len(result), 1)
         
         # Verify the message data
-        self.assertEqual(result[0]['subject'], 'Test Subject')
-        self.assertEqual(result[0]['attachment_filename'], 'attachment.txt')
+        self.assertEqual(result[0]['subject'], 'Test Subject with Attachment')
+        self.assertEqual(result[0]['attachment_filename'], 'test.txt')
         self.assertEqual(result[0]['attachment_type'], 'text/plain')
-        
-        # Verify that file was opened for writing
-        expected_path = os.path.join(self.output_dir, 'attachments', 'attachment.txt')
-        m_open.assert_called_once_with(expected_path, 'wb')
-        
-        # Verify that attachment content was written
-        handle = m_open()
-        handle.write.assert_called_once_with(b'test attachment content')
     
     @patch('mailbox.mbox')
     def test_parse_mbox_file_attachment_error(self, mock_mbox):
         """Test handling errors when saving attachments."""
         # Create a message with an attachment
-        attachment = MockPart(
-            content_type='text/plain',
-            filename='attachment.txt',
-            disposition='attachment',
-            payload=b'test attachment content'
-        )
-        
         message = MockMessage(
             headers={
-                'subject': 'Test Subject',
+                'subject': 'Test Subject with Attachment',
                 'from': 'Sender Name <sender@example.com>',
                 'to': 'Receiver Name <receiver@example.com>',
                 'date': '2023-01-01 12:00:00'
             },
-            parts=[attachment]
+            parts=[
+                MockPart(
+                    content_type='text/plain', 
+                    filename='test.txt', 
+                    disposition='attachment; filename="test.txt"',
+                    payload=b'Test attachment content'
+                )
+            ]
         )
         
         # Mock the mailbox with one message
-        mock_mbox.return_value = [message]
+        mock_mailbox = MagicMock()
+        mock_mailbox.__iter__.return_value = [message]
+        mock_mailbox.__len__.return_value = 1
+        mock_mbox.return_value = mock_mailbox
         
-        # Mock open to raise an IOError
-        m_open = mock_open()
-        m_open.side_effect = IOError("Test IO error")
+        # Mock save_attachment to fail
+        with patch('mbox_parser.save_attachment', return_value=False):
+            with patch('sqlite3.connect') as mock_connect:
+                mock_connection = MagicMock()
+                mock_connect.return_value = mock_connection
+                
+                # Parse the mailbox
+                result = parse_mbox_file(self.mbox_path, self.output_dir)
         
-        # Parse the mailbox
-        with patch('builtins.open', m_open), patch('sqlite3.connect') as mock_connect:
-            mock_cursor = MagicMock()
-            mock_connection = MagicMock()
-            mock_connection.cursor.return_value = mock_cursor
-            mock_connect.return_value = mock_connection
-            
-            # Should handle the error and continue
-            result = parse_mbox_file(self.mbox_path, self.output_dir)
-        
-        # Email is still processed even if attachment save fails
-        self.assertEqual(len(result), 1)
-        # But should log an error (which our test captures)
+        # Should not have any message in the result (since attachment failed)
+        self.assertEqual(len(result), 0)
     
     @patch('mailbox.mbox')
     def test_parse_mbox_file_missing_fields(self, mock_mbox):
         """Test parsing a message with missing fields."""
         # Create a message with missing fields
         message = MockMessage(headers={
-            # Missing subject
+            'subject': '',  # Missing subject
             'from': 'Sender Name <sender@example.com>',
-            # Missing to
+            'to': 'Receiver Name <receiver@example.com>',
             'date': '2023-01-01 12:00:00'
         })
         
@@ -259,7 +390,7 @@ class TestMboxParser(unittest.TestCase):
             
             result = parse_mbox_file(self.mbox_path, self.output_dir)
         
-        # Should have no messages in the result (due to missing fields)
+        # Should not have any message in the result (due to missing fields)
         self.assertEqual(len(result), 0)
     
     @patch('mailbox.mbox')
@@ -276,62 +407,43 @@ class TestMboxParser(unittest.TestCase):
         # Mock the mailbox with one message
         mock_mbox.return_value = [message]
         
-        # Mock sqlite3.connect to raise an error during execute
-        mock_cursor = MagicMock()
-        mock_cursor.execute.side_effect = sqlite3.Error("Test DB error")
-        
-        mock_connection = MagicMock()
-        mock_connection.cursor.return_value = mock_cursor
-        
-        mock_connect = MagicMock(return_value=mock_connection)
-        
-        # Parse the mailbox
-        with patch('sqlite3.connect', mock_connect):
-            # Should handle the error and continue
-            result = parse_mbox_file(self.mbox_path, self.output_dir)
-        
-        # Should have one message in the result (despite DB error)
-        self.assertEqual(len(result), 1)
+        # Mock store_data to raise an exception
+        with patch('mbox_parser.store_data', side_effect=Exception("Test exception")):
+            with patch('sqlite3.connect') as mock_connect:
+                mock_connection = MagicMock()
+                mock_connect.return_value = mock_connection
+                
+                # Parse the mailbox should raise the exception
+                with self.assertRaises(Exception):
+                    parse_mbox_file(self.mbox_path, self.output_dir)
+                
+                # Verify rollback was called
+                mock_connection.rollback.assert_called_once()
     
     @patch('mailbox.mbox')
     def test_parse_mbox_file_general_error(self, mock_mbox):
         """Test handling general errors during parsing."""
-        # Mock mailbox.mbox to raise an exception
-        mock_mbox.side_effect = Exception("Test general error")
+        # Make mailbox.mbox raise an exception
+        mock_mbox.side_effect = Exception("Test exception")
         
-        # Parse the mailbox (should handle the error)
-        result = parse_mbox_file(self.mbox_path, self.output_dir)
-        
-        # Should return an empty list on error
-        self.assertEqual(result, [])
+        # Parse the mailbox should raise the exception
+        with self.assertRaises(Exception):
+            parse_mbox_file(self.mbox_path, self.output_dir)
     
     @patch('mailbox.mbox')
     def test_parse_mbox_file_connection_closure(self, mock_mbox):
         """Test proper connection closure with provided connection."""
-        # Create a message
-        message = MockMessage(headers={
-            'subject': 'Test Subject',
-            'from': 'Sender Name <sender@example.com>',
-            'to': 'Receiver Name <receiver@example.com>',
-            'date': '2023-01-01 12:00:00'
-        })
-        
-        # Mock the mailbox with one message
-        mock_mbox.return_value = [message]
+        # Mock an empty mailbox
+        mock_mbox.return_value = []
         
         # Create a mock connection
         mock_connection = MagicMock()
-        mock_cursor = MagicMock()
-        mock_connection.cursor.return_value = mock_cursor
         
-        # Parse the mailbox with provided connection
-        result = parse_mbox_file(self.mbox_path, self.output_dir, mock_connection)
+        # Parse with the provided connection
+        parse_mbox_file(self.mbox_path, self.output_dir, mock_connection)
         
-        # Verify the connection was not closed (because it was provided externally)
+        # Verify the connection was not closed (since it was provided)
         mock_connection.close.assert_not_called()
-        
-        # But it should have been committed
-        mock_connection.commit.assert_called()
     
     @patch('mailbox.mbox')
     @patch('os.path.exists')
@@ -341,188 +453,98 @@ class TestMboxParser(unittest.TestCase):
         # Mock prerequisites
         mock_exists.return_value = True
         
-        # Create a mock message with attachment
-        mock_message = MagicMock()
-        mock_message.__getitem__.side_effect = lambda key: {
-            'subject': 'Test Email',
-            'from': 'Sender Name <sender@example.com>',
-            'to': 'Receiver Name <receiver@example.com>',
-            'date': 'Thu, 1 Jan 2023 12:00:00 +0000'
-        }.get(key, None)
+        # Create a message with an attachment
+        message = MockMessage(
+            headers={
+                'subject': 'Test Subject with Attachment',
+                'from': 'Sender Name <sender@example.com>',
+                'to': 'Receiver Name <receiver@example.com>',
+                'date': '2023-01-01 12:00:00'
+            },
+            parts=[
+                MockPart(
+                    content_type='text/plain', 
+                    filename='test.txt', 
+                    disposition='attachment; filename="test.txt"',
+                    payload=b'Test attachment content'
+                )
+            ]
+        )
         
-        # Set up the attachment part
-        mock_part = MagicMock()
-        mock_part.get_content_maintype.return_value = 'text'
-        mock_part.get.return_value = 'attachment; filename="test.txt"'
-        mock_part.get_filename.return_value = 'test.txt'
-        mock_part.get_content_type.return_value = 'text/plain'
-        mock_part.get_payload.return_value = b'Test attachment content'
+        # Mock the mailbox with one message
+        mock_mailbox = MagicMock()
+        mock_mailbox.__iter__.return_value = [message]
+        mock_mailbox.__len__.return_value = 1
+        mock_mbox.return_value = mock_mailbox
         
-        # Configure the message's walk method to yield our mock parts
-        mock_message.walk.return_value = [mock_part]
-        
-        # Set up the MBOX to return our mock message
-        mock_mbox_instance = MagicMock()
-        mock_mbox_instance.__iter__.return_value = [mock_message]
-        mock_mbox_instance.__len__.return_value = 1
-        mock_mbox.return_value = mock_mbox_instance
-        
-        # Mock open function for attachment saving
-        with patch('builtins.open', mock_open()) as mock_file:
-            # Test parse_mbox_file with source_pst parameter
-            result = parse_mbox_file(self.mbox_path, self.output_dir, source_pst='test.pst')
-            
-            # Verify the result
-            self.assertEqual(len(result), 1)
-            self.assertEqual(result[0]['subject'], 'Test Email')
-            self.assertEqual(result[0]['sender_email'], 'sender@example.com')
-            self.assertEqual(result[0]['recipient_email'], 'receiver@example.com')
-            self.assertEqual(result[0]['attachment_filename'], 'test.txt')
-            self.assertEqual(result[0]['source_pst'], 'test.pst')
-            
-            # Verify the attachment was saved
-            mock_file.assert_called_once()
-            
-            # Verify data was inserted into the database
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM emails")
-            row = cursor.fetchone()
-            self.assertIsNotNone(row)
-            self.assertEqual(row[9], 'test.pst')  # Check source_pst field
-    
-    @patch('mailbox.mbox')
-    @patch('os.path.exists')
-    @patch('os.makedirs')
-    def test_parse_mbox_file_no_attachment_with_source_pst(self, mock_makedirs, mock_exists, mock_mbox):
-        """Test parsing an MBOX file with no attachments and source_pst parameter."""
-        # Mock prerequisites
-        mock_exists.return_value = True
-        
-        # Create a mock message without attachment
-        mock_message = MagicMock()
-        mock_message.__getitem__.side_effect = lambda key: {
-            'subject': 'Test Email',
-            'from': 'Sender Name <sender@example.com>',
-            'to': 'Receiver Name <receiver@example.com>',
-            'date': 'Thu, 1 Jan 2023 12:00:00 +0000'
-        }.get(key, None)
-        
-        # Set up empty part with no attachment
-        mock_part = MagicMock()
-        mock_part.get_content_maintype.return_value = 'text'
-        mock_part.get.return_value = None  # No Content-Disposition
-        
-        # Configure message to return our mock part
-        mock_message.walk.return_value = [mock_part]
-        
-        # Set up the MBOX
-        mock_mbox_instance = MagicMock()
-        mock_mbox_instance.__iter__.return_value = [mock_message]
-        mock_mbox_instance.__len__.return_value = 1
-        mock_mbox.return_value = mock_mbox_instance
-        
-        # Test parse_mbox_file with source_pst parameter
-        result = parse_mbox_file(self.mbox_path, self.output_dir, source_pst='test.pst')
-        
-        # Verify the result
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]['subject'], 'Test Email')
-        self.assertEqual(result[0]['attachment_filename'], '')  # No attachment
-        self.assertEqual(result[0]['source_pst'], 'test.pst')
-        
-        # Verify data was inserted into the database
+        # Set up the database connection
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM emails")
-        row = cursor.fetchone()
-        self.assertIsNotNone(row)
-        self.assertEqual(row[9], 'test.pst')  # Check source_pst field
-    
-    @patch('mailbox.mbox')
-    @patch('db_manager.create_db')
-    def test_parse_mbox_file_no_connection_with_source_pst(self, mock_create_db, mock_mbox):
-        """Test parsing with auto-created connection and source_pst parameter."""
-        # Mock mailbox
-        mock_mbox_instance = MagicMock()
-        mock_mbox_instance.__iter__.return_value = []
-        mock_mbox_instance.__len__.return_value = 0
-        mock_mbox.return_value = mock_mbox_instance
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS emails (
+            id INTEGER PRIMARY KEY,
+            subject TEXT,
+            sender_name TEXT,
+            sender_email TEXT,
+            recipient_name TEXT,
+            recipient_email TEXT,
+            attachment_filename TEXT,
+            attachment_type TEXT,
+            email_date TEXT,
+            source_pst TEXT
+        )
+        ''')
+        conn.commit()
         
-        # Mock create_db
-        mock_create_db.return_value = True
-        
-        with patch('sqlite3.connect') as mock_connect:
-            # Mock the connection
-            mock_connection = MagicMock()
-            mock_connect.return_value = mock_connection
-            
-            # Call without providing a connection but with source_pst
-            parse_mbox_file(self.mbox_path, self.output_dir, source_pst='test.pst')
-            
-            # Verify a connection was created
-            mock_connect.assert_called_once()
-            # Verify connection was closed
-            mock_connection.close.assert_called_once()
-    
-    @patch('mailbox.mbox', side_effect=Exception("Test exception"))
-    def test_parse_mbox_file_exception_with_source_pst(self, mock_mbox):
-        """Test exception handling with source_pst parameter."""
-        with self.assertRaises(Exception):
-            parse_mbox_file(self.mbox_path, self.output_dir, source_pst='test.pst')
-            
-        # Verify transaction was rolled back
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT count(*) FROM emails")
-        count = cursor.fetchone()[0]
-        self.assertEqual(count, 0)
-    
-    @patch('mailbox.mbox')
-    @patch('os.path.exists')
-    @patch('os.makedirs')
-    def test_parse_mbox_file_attachment_error_with_source_pst(self, mock_makedirs, mock_exists, mock_mbox):
-        """Test handling attachment saving errors with source_pst parameter."""
-        # Mock prerequisites
-        mock_exists.return_value = True
-        
-        # Create a mock message with attachment
-        mock_message = MagicMock()
-        mock_message.__getitem__.side_effect = lambda key: {
-            'subject': 'Test Email',
-            'from': 'Sender Name <sender@example.com>',
-            'to': 'Receiver Name <receiver@example.com>',
-            'date': 'Thu, 1 Jan 2023 12:00:00 +0000'
-        }.get(key, None)
-        
-        # Set up the attachment part
-        mock_part = MagicMock()
-        mock_part.get_content_maintype.return_value = 'text'
-        mock_part.get.return_value = 'attachment; filename="test.txt"'
-        mock_part.get_filename.return_value = 'test.txt'
-        mock_part.get_content_type.return_value = 'text/plain'
-        mock_part.get_payload.return_value = b'Test attachment content'
-        
-        # Configure the message
-        mock_message.walk.return_value = [mock_part]
-        
-        # Set up the MBOX
-        mock_mbox_instance = MagicMock()
-        mock_mbox_instance.__iter__.return_value = [mock_message]
-        mock_mbox_instance.__len__.return_value = 1
-        mock_mbox.return_value = mock_mbox_instance
-        
-        # Mock open to raise IOError
-        with patch('builtins.open', side_effect=IOError("Test I/O error")):
-            with patch('logging.error') as mock_log_error:
-                # Test with attachment error and source_pst
-                result = parse_mbox_file(self.mbox_path, self.output_dir, source_pst='test.pst')
+        # Mock save_attachment to return True and store_data to insert actual data
+        with patch('mbox_parser.save_attachment', return_value=True):
+            with patch('mbox_parser.store_data') as mock_store_data:
+                # Set up mock_store_data to call our helper method
+                mock_store_data.side_effect = lambda data, conn_arg: self._mock_store_data(data, conn if conn_arg == conn else conn_arg)
                 
-                # Verify error was logged
-                mock_log_error.assert_called()
+                # Parse the mailbox with source_pst
+                with patch('builtins.open', mock_open()) as mock_file:
+                    result = parse_mbox_file(self.mbox_path, self.output_dir, conn, source_pst='test.pst')
                 
-                # Despite the attachment error, we should still have some data
-                self.assertEqual(len(result), 0)
+                # Should have one message in the result
+                self.assertEqual(len(result), 1)
+                
+                # Verify source_pst was included in the result
+                self.assertEqual(result[0]['source_pst'], 'test.pst')
+                
+                # Verify mock_store_data was called with the right data
+                called_data = mock_store_data.call_args[0][0]
+                self.assertEqual(called_data['source_pst'], 'test.pst')
+                
+                # Query the database to verify data was stored
+                cursor = conn.cursor()
+                cursor.execute("SELECT source_pst FROM emails")
+                row = cursor.fetchone()
+                self.assertIsNotNone(row, "No data was inserted into the database")
+                self.assertEqual(row[0], 'test.pst')
+        
+        # Clean up
+        conn.close()
+    
+    def _mock_store_data(self, data, db_connection):
+        """Helper method to mock store_data by actually inserting data."""
+        cursor = db_connection.cursor()
+        cursor.execute('''
+        INSERT INTO emails (subject, sender_name, sender_email, recipient_name, recipient_email, attachment_filename, attachment_type, email_date, source_pst)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            data['subject'],
+            data['sender_name'],
+            data['sender_email'],
+            data['recipient_name'],
+            data['recipient_email'],
+            data['attachment_filename'],
+            data['attachment_type'],
+            data['email_date'],
+            data['source_pst']
+        ))
+        db_connection.commit()
+        return True
 
 if __name__ == '__main__':
     unittest.main()

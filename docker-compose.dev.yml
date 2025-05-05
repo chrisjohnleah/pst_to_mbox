@@ -1,5 +1,5 @@
 services:
-  myapp:
+  pst_to_mbox:
     build:
       context: .
       dockerfile: Dockerfile.dev
