@@ -1,1 +1,4 @@
-ÿþ
+mailbox
+sqlite3
+argparse
+concurrent.futures
