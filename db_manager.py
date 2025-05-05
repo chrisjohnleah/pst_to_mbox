@@ -36,25 +36,31 @@ def store_data(data_dict: Dict[str, str], db_name: str = 'emaildb.sqlite3') -> b
         return False
 
     try:
-        with sqlite3.connect(db_name) as conn:
-            cursor = conn.cursor()
-            data_to_insert = (
-                data_dict['subject'],
-                data_dict['sender_name'],
-                data_dict['sender_email'],
-        data_dict['content_type'], 
-        data_dict['datetime'], 
-    )
+        conn = sqlite3.connect(db_name)
+        cursor = conn.cursor()
+        data_to_insert = (
+            data_dict['subject'],
+            data_dict['sender_name'],
+            data_dict['sender_email'],
+            data_dict['receiver_name'],
+            data_dict['receiver_email'],
+            data_dict['attachment_name'],
+            data_dict['content_type'], 
+            data_dict['datetime']
+        )
 
-    # Insert data into the table
-    insert_sql = '''
-    INSERT INTO mytable (subject, sender_name, sender_email, receiver_name, receiver_email, attachment_name, content_type, datetime)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    '''
-    cursor.execute(insert_sql, data_to_insert)
+        # Insert data into the table
+        insert_sql = '''
+        INSERT INTO mytable (subject, sender_name, sender_email, receiver_name, receiver_email, attachment_name, content_type, datetime)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        '''
+        cursor.execute(insert_sql, data_to_insert)
 
-    # Commit the changes and close the database connection
-    conn.commit()
-    conn.close()
-    print("Data inserted in db successfully.")
-
+        # Commit the changes and close the database connection
+        conn.commit()
+        conn.close()
+        logging.info("Data inserted in db successfully.")
+        return True
+    except sqlite3.Error as e:
+        logging.error(f"Error storing data: {e}")
+        return False
